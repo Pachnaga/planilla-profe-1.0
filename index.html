@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="theme-color" content="#030712">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Profe">
+<title>Planilla del Profe</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  *{box-sizing:border-box;}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#030712;margin:0;min-height:100vh;}
+  select option{background:#1f2937;color:#f3f4f6;}
+  .cell-att{cursor:pointer;user-select:none;}
+  .cell-att:active{opacity:.7;}
+  ::-webkit-scrollbar{width:4px;height:4px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#374151;border-radius:2px;}
+  @media print{
+    @page{size:A4 portrait;margin:8mm 10mm;}
+    body{background:white!important;}
+    .no-print{display:none!important;}
+    .print-break{page-break-after:always;}
+    .print-break:last-child{page-break-after:avoid;}
+    .print-card{height:131mm;overflow:hidden;box-sizing:border-box;}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback}=React;
+
+// ═══════════════ CONSTANTS ═══════════════
+const DIAS   = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+const MES_C  = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const MES_F  = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+
+const FER26 = {
+  "2026-01-01":"Año Nuevo","2026-02-16":"Carnaval","2026-02-17":"Carnaval",
+  "2026-03-24":"Día de la Memoria","2026-04-02":"Día del Veterano",
+  "2026-04-03":"Viernes Santo","2026-05-01":"Día del Trabajo",
+  "2026-05-25":"Revolución de Mayo","2026-06-15":"Güemes",
+  "2026-07-09":"Independencia","2026-07-10":"Puente turístico",
+  "2026-08-17":"San Martín","2026-10-12":"Diversidad Cultural",
+  "2026-11-23":"Soberanía Nacional","2026-12-08":"Inmaculada Concepción",
+  "2026-12-25":"Navidad"
+};
+
+const PALETA = ["#3b82f6","#8b5cf6","#06b6d4","#10b981","#f59e0b","#ef4444","#f97316","#ec4899","#84cc16","#14b8a6"];
+const ESTADO_OPTS  = ["","Entregado","Sin entregar","Entregado tarde"];
+const EVAL_OPTS    = ["","Aprobado","Regular","Corregir"];
+const CONC_OPTS    = ["","Muy bueno","Bueno","Regular","A mejorar"];
+const ANIO_OPTS    = ["1°","2°","3°","4°","5°","6°"];
+const LS_KEY = "profe_app_v1";
+
+// ═══════════════ UTILS ═══════════════
+const uid  = () => Math.random().toString(36).slice(2,8)+Date.now().toString(36).slice(-4);
+const deep = o => JSON.parse(JSON.stringify(o));
+const d2d  = iso => new Date(iso+"T12:00:00");
+const hoy0 = () => { const h=new Date(); h.setHours(23,59,59,999); return h; };
+const isToday = iso => { const t=new Date(),d=d2d(iso); return t.getFullYear()===d.getFullYear()&&t.getMonth()===d.getMonth()&&t.getDate()===d.getDate(); };
+const isPast  = iso => d2d(iso)<=hoy0();
+const fmtDate = iso => { const d=d2d(iso); return `${d.getDate()} ${MES_C[d.getMonth()]} ${d.getFullYear()}`; };
+const isoYear = iso => d2d(iso).getFullYear();
+
+// ═══════════════ DATA CREATORS ═══════════════
+const mkSchool = (nombre,color) => ({id:uid(),nombre,color:color||PALETA[0],cursos:[]});
+
+const mkCourse = (o={}) => ({
+  id:uid(), anio:"1°", division:"", materia:"", institucion:"",
+  diasSemana:[1,3],
+  fechaInicio:"2026-04-01", fechaFin:"2026-12-04",
+  vacaciones:[{ini:"2026-07-13",fin:"2026-07-24",label:"Vacaciones de invierno"}],
+  limitePct:20, feriadosExtra:[],
+  cantTPs:5, nombresTP:["TP 1","TP 2","TP 3","TP 4","TP 5"],
+  cantEx:2, nombresEx:["Instancia 1","Instancia 2"],
+  estudiantes:[], fechasClase:null, asistencia:{}, ...o
+});
+
+const mkStudent = (nombre,cTP=5,cEx=2) => ({
+  id:uid(), nombre,
+  tps:Array.from({length:cTP},()=>({estado:"",evaluacion:""})),
+  examenes:Array.from({length:cEx},()=>""),
+  conceptos:["","",""], observaciones:""
+});
+
+// ═══════════════ DATE GENERATION ═══════════════
+const genFechas = (curso, oldFechas) => {
+  const ferExt  = new Set((curso.feriadosExtra||[]).map(f=>f.date));
+  const ferNac  = new Set(Object.keys(FER26));
+  const vacs    = (curso.vacaciones||[]).map(v=>({ini:d2d(v.ini),fin:d2d(v.fin)}));
+  const manOff  = new Set(oldFechas ? oldFechas.filter(f=>f.motivo==="manual").map(f=>f.date) : []);
+  const result  = [];
+  const end     = d2d(curso.fechaFin);
+  let d = new Date(d2d(curso.fechaInicio));
+  while (d<=end) {
+    if (curso.diasSemana.includes(d.getDay())) {
+      const iso = d.toISOString().slice(0,10);
+      const inV = vacs.some(v=>d>=v.ini&&d<=v.fin);
+      const isF = ferNac.has(iso);
+      const isFE= ferExt.has(iso);
+      const isM = manOff.has(iso);
+      let motivo=null;
+      if(inV) motivo="vac"; else if(isF) motivo="feriado"; else if(isFE) motivo="extra"; else if(isM) motivo="manual";
+      result.push({date:iso, active:!inV&&!isF&&!isFE&&!isM, motivo});
+    }
+    d.setDate(d.getDate()+1);
+  }
+  return result;
+};
+
+// ═══════════════ STATS ═══════════════
+const calcAsis = (curso,estId) => {
+  if(!curso.fechasClase) return null;
+  const att=curso.asistencia[estId]||[];
+  const h=hoy0(); let tot=0,aus=0;
+  curso.fechasClase.forEach((f,i)=>{ if(f.active&&d2d(f.date)<=h){tot++;if(att[i]==="A")aus++;} });
+  return {aus,tot,pct:tot>0?Math.round(aus/tot*100):0};
+};
+
+const calcAlerta = (est,curso) => {
+  const se=est.tps.filter(t=>t.estado==="Sin entregar").length;
+  const eb=est.examenes.filter(e=>e!==""&&Number(e)<4).length;
+  const a=calcAsis(curso,est.id);
+  const lim=curso.limitePct||20;
+  if(se>=3||eb>0||(a&&a.tot>0&&a.pct>lim)) return "roja";
+  if(se>=2) return "amarilla";
+  return (est.tps.some(t=>t.estado)||est.examenes.some(e=>e)||(a&&a.tot>0))?"verde":"gris";
+};
+
+// ═══════════════ COLOR HELPERS ═══════════════
+const cC=c=>({
+  "Muy bueno":"bg-emerald-900/70 border-emerald-700 text-emerald-300",
+  "Bueno":"bg-blue-900/70 border-blue-700 text-blue-300",
+  "Regular":"bg-amber-900/70 border-amber-700 text-amber-300",
+  "A mejorar":"bg-red-900/70 border-red-700 text-red-300"
+}[c]||"bg-gray-800 border-gray-700 text-gray-500");
+
+const cE=e=>({
+  "Entregado":"bg-emerald-900/60 border-emerald-700 text-emerald-300",
+  "Sin entregar":"bg-red-900/60 border-red-700 text-red-300",
+  "Entregado tarde":"bg-amber-900/60 border-amber-700 text-amber-300"
+}[e]||"bg-gray-800 border-gray-700 text-gray-400");
+
+const cV=v=>({
+  "Aprobado":"bg-emerald-900/60 border-emerald-700 text-emerald-300",
+  "Corregir":"bg-red-900/60 border-red-700 text-red-300",
+  "Regular":"bg-amber-900/60 border-amber-700 text-amber-300"
+}[v]||"bg-gray-800 border-gray-700 text-gray-400");
+
+const cPct=pct=>pct>20?"text-red-400 font-bold":pct>10?"text-amber-400 font-semibold":pct>0?"text-gray-200":"text-gray-600";
+
+// ═══════════════ ICONS ═══════════════
+const Sv=({d,s=16,sw=2,extra=""})=><svg xmlns="http://www.w3.org/2000/svg" width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" className={extra}>{(Array.isArray(d)?d:[d]).map((p,i)=><path key={i} d={p}/>)}</svg>;
+const IcPlus  =({s=14})=><Sv s={s} d={["M12 5v14","M5 12h14"]}/>;
+const IcMinus =({s=14})=><Sv s={s} d="M5 12h14"/>;
+const IcTrash =({s=14})=><Sv s={s} d={["M3 6h18","M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"]}/>;
+const IcEdit  =({s=14})=><Sv s={s} d={["M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7","M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"]}/>;
+const IcDown  =({s=13})=><Sv s={s} d={["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4","M7 10l5 5 5-5","M12 15V3"]}/>;
+const IcUp    =({s=13})=><Sv s={s} d={["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4","M17 8l-5-5-5 5","M12 3v12"]}/>;
+const IcBack  =({s=18})=><Sv s={s} d={["M19 12H5","M12 19l-7-7 7-7"]}/>;
+const IcSort  =({s=14})=><Sv s={s} d={["M11 5h10","M11 9h7","M11 13h4","M3 17l3 3 3-3","M6 20V4"]}/>;
+const IcDup   =({s=14})=><Sv s={s} d={["M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2","M20 8h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2z"]}/>;
+const IcImport=({s=14})=><Sv s={s} d={["M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2","M23 21v-2a4 4 0 0 0-3-3.87","M16 3.13a4 4 0 0 1 0 7.75","M9 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"]}/>;
+const IcPrint =({s=16})=>(
+  <svg xmlns="http://www.w3.org/2000/svg" width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="6 9 6 2 18 2 18 9"/>
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+    <rect x="6" y="14" width="12" height="8"/>
+  </svg>
+);
+const IcGear=({s=15})=>(
+  <svg xmlns="http://www.w3.org/2000/svg" width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+);
+const IcHome=({s=16})=>(
+  <svg xmlns="http://www.w3.org/2000/svg" width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+    <polyline points="9 22 9 12 15 12 15 22"/>
+  </svg>
+);
+
+const AlertDot=({nivel})=>{
+  const cls={roja:"bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.8)]",amarilla:"bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.7)]",verde:"bg-emerald-500",gris:"bg-gray-700"}[nivel];
+  return <span className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${cls}`}/>;
+};
+
+// ═══════════════ SHARED UI ═══════════════
+const Btn=({onClick,cls="",ch,disabled=false})=>(
+  <button onClick={onClick} disabled={disabled} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${cls}`}>{ch}</button>
+);
+
+// ═══════════════ CONFIRM MODAL ═══════════════
+function ConfirmModal({msg,info,confirmLabel="Confirmar",danger=false,onConfirm,onCancel}){
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <p className="text-gray-200 text-sm leading-relaxed mb-1">{msg}</p>
+        {info&&<p className="text-gray-500 text-xs mb-5">{info}</p>}
+        <div className={`flex gap-3 justify-end ${info?"":"mt-5"}`}>
+          {onCancel&&<button onClick={onCancel} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors">Cancelar</button>}
+          <button onClick={onConfirm} className={`px-4 py-2 text-sm font-semibold rounded-lg border transition-colors ${danger?"bg-red-700 hover:bg-red-600 text-white border-red-600":"bg-blue-700 hover:bg-blue-600 text-white border-blue-600"}`}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ SCHOOL MODAL ═══════════════
+function SchoolModal({school,onSave,onCancel}){
+  const [nombre,setNombre]=useState(school?.nombre||"");
+  const [color,setColor]=useState(school?.color||PALETA[0]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <h2 className="text-sm font-bold text-gray-200 mb-4">{school?"Editar institución":"Nueva institución"}</h2>
+        <label className="block text-xs text-gray-500 mb-1">Nombre de la institución</label>
+        <input autoFocus value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Ej: Escuela Normal N°1"
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 text-gray-100 rounded-lg text-sm outline-none focus:border-blue-500 mb-4"/>
+        <label className="block text-xs text-gray-500 mb-2">Color de etiqueta</label>
+        <div className="flex flex-wrap gap-2 mb-5">
+          {PALETA.map(c=>(
+            <button key={c} onClick={()=>setColor(c)} className={`w-7 h-7 rounded-full border-2 transition-all ${color===c?"border-white scale-110":"border-transparent"}`} style={{background:c}}/>
+          ))}
+        </div>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors">Cancelar</button>
+          <button onClick={()=>{ if(!nombre.trim()) return alert("Ingresá el nombre de la institución"); onSave({nombre:nombre.trim(),color}); }} className="px-4 py-2 text-sm font-semibold bg-blue-700 hover:bg-blue-600 text-white rounded-lg border border-blue-600 transition-colors">Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ COURSE MODAL ═══════════════
+function CourseModal({course,schoolName,onSave,onCancel}){
+  const [f,setF]=useState({
+    anio:course?.anio||"1°", division:course?.division||"", materia:course?.materia||"",
+    institucion:course?.institucion||schoolName||"",
+    diasSemana:course?.diasSemana||[1,3],
+    fechaInicio:course?.fechaInicio||"2026-04-01", fechaFin:course?.fechaFin||"2026-12-04",
+    vacaciones:course?.vacaciones||[{ini:"2026-07-13",fin:"2026-07-24",label:"Vacaciones de invierno"}],
+    limitePct:course?.limitePct||20,
+    feriadosExtra:course?.feriadosExtra||[]
+  });
+  const [tab,setTab]=useState("info");
+  const toggleDia=d=>setF(p=>({...p,diasSemana:p.diasSemana.includes(d)?p.diasSemana.filter(x=>x!==d):[...p.diasSemana,d].sort()}));
+  const addVac=()=>setF(p=>({...p,vacaciones:[...p.vacaciones,{ini:"",fin:"",label:"Receso"}]}));
+  const delVac=i=>setF(p=>({...p,vacaciones:p.vacaciones.filter((_,j)=>j!==i)}));
+  const updVac=(i,k,v)=>setF(p=>({...p,vacaciones:p.vacaciones.map((vac,j)=>j===i?{...vac,[k]:v}:vac)}));
+  const addFer=()=>setF(p=>({...p,feriadosExtra:[...p.feriadosExtra,{date:"",label:""}]}));
+  const delFer=i=>setF(p=>({...p,feriadosExtra:p.feriadosExtra.filter((_,j)=>j!==i)}));
+  const updFer=(i,k,v)=>setF(p=>({...p,feriadosExtra:p.feriadosExtra.map((fe,j)=>j===i?{...fe,[k]:v}:fe)}));
+  const inCls="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 text-gray-100 rounded-lg text-xs outline-none focus:border-blue-500";
+  const lCls="block text-xs text-gray-500 mb-1 mt-3";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="px-5 pt-5 pb-3 border-b border-gray-800">
+          <h2 className="text-sm font-bold text-gray-200">{course?"Editar curso":"Nuevo curso"}</h2>
+          <div className="flex gap-1 mt-3">
+            {["info","calendario","feriados"].map(t=>(
+              <button key={t} onClick={()=>setTab(t)} className={`px-3 py-1 text-xs rounded-lg border transition-colors capitalize ${tab===t?"bg-blue-700 border-blue-600 text-white":"bg-gray-800 border-gray-700 text-gray-400"}`}>
+                {t==="info"?"Información":t==="calendario"?"Calendario":"Feriados extra"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="overflow-y-auto flex-1 px-5 py-3">
+          {tab==="info" && <>
+            <label className={lCls}>Materia *</label>
+            <input value={f.materia} onChange={e=>setF(p=>({...p,materia:e.target.value}))} placeholder="Ej: Historia" className={inCls}/>
+            <label className={lCls}>Institución</label>
+            <input value={f.institucion} onChange={e=>setF(p=>({...p,institucion:e.target.value}))} placeholder="Nombre de la escuela" className={inCls}/>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className={lCls}>Año</label>
+                <select value={f.anio} onChange={e=>setF(p=>({...p,anio:e.target.value}))} className={inCls}>
+                  {ANIO_OPTS.map(a=><option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={lCls}>División / sección</label>
+                <input value={f.division} onChange={e=>setF(p=>({...p,division:e.target.value}))} placeholder="Ej: B" className={inCls}/>
+              </div>
+            </div>
+            <label className={lCls}>Límite de inasistencias (%)</label>
+            <input type="number" min="1" max="100" value={f.limitePct} onChange={e=>setF(p=>({...p,limitePct:Number(e.target.value)||20}))} className={inCls}/>
+          </>}
+          {tab==="calendario" && <>
+            <label className={lCls}>Días de clase</label>
+            <div className="flex gap-1.5 flex-wrap mt-1 mb-2">
+              {[1,2,3,4,5,6,0].map(d=>(
+                <button key={d} onClick={()=>toggleDia(d)}
+                  className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${f.diasSemana.includes(d)?"bg-blue-700 border-blue-600 text-white":"bg-gray-800 border-gray-700 text-gray-400"}`}>
+                  {DIAS[d]}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className={lCls}>Inicio del ciclo</label>
+                <input type="date" value={f.fechaInicio} onChange={e=>setF(p=>({...p,fechaInicio:e.target.value}))} className={inCls}/>
+              </div>
+              <div>
+                <label className={lCls}>Fin del ciclo</label>
+                <input type="date" value={f.fechaFin} onChange={e=>setF(p=>({...p,fechaFin:e.target.value}))} className={inCls}/>
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-4 mb-2">
+              <label className="text-xs text-gray-500">Períodos de vacaciones / recesos</label>
+              <button onClick={addVac} className="text-xs text-blue-400 hover:text-blue-300">+ Agregar</button>
+            </div>
+            {f.vacaciones.map((v,i)=>(
+              <div key={i} className="bg-gray-800/60 rounded-xl p-2 mb-2 border border-gray-700">
+                <div className="flex items-center justify-between mb-1">
+                  <input value={v.label} onChange={e=>updVac(i,"label",e.target.value)} placeholder="Nombre del período" className="bg-transparent text-xs text-gray-300 outline-none flex-1"/>
+                  <button onClick={()=>delVac(i)} className="text-gray-600 hover:text-red-400 ml-2"><IcTrash s={12}/></button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input type="date" value={v.ini} onChange={e=>updVac(i,"ini",e.target.value)} className={inCls}/>
+                  <input type="date" value={v.fin} onChange={e=>updVac(i,"fin",e.target.value)} className={inCls}/>
+                </div>
+              </div>
+            ))}
+          </>}
+          {tab==="feriados" && (()=>{
+            const anoInicio = f.fechaInicio ? new Date(f.fechaInicio+"T12:00:00").getFullYear() : 2026;
+            const esFer26 = anoInicio === 2026;
+            return <>
+              {esFer26
+                ? <p className="text-xs text-gray-500 mb-3">Los feriados nacionales 2026 ya están precargados. Aquí podés agregar feriados provinciales, actos escolares u otras fechas sin clase.</p>
+                : <div className="bg-amber-950/40 border border-amber-700/50 rounded-xl px-3 py-2.5 mb-3">
+                    <p className="text-xs text-amber-300 font-semibold mb-0.5">Feriados nacionales no disponibles para {anoInicio}</p>
+                    <p className="text-xs text-amber-200/70">Solo los feriados de 2026 están precargados. Para otros años, cargalos manualmente como "fechas adicionales sin clase".</p>
+                  </div>
+              }
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs text-gray-500">{esFer26?"Fechas adicionales sin clase":"Feriados y fechas sin clase"}</label>
+                <button onClick={addFer} className="text-xs text-blue-400 hover:text-blue-300">+ Agregar</button>
+              </div>
+              {f.feriadosExtra.length===0&&<p className="text-xs text-gray-700 italic">Sin fechas adicionales.</p>}
+              {f.feriadosExtra.map((fe,i)=>(
+                <div key={i} className="flex gap-2 items-center mb-2">
+                  <input type="date" value={fe.date} onChange={e=>updFer(i,"date",e.target.value)} className={`${inCls} flex-shrink-0 w-36`}/>
+                  <input value={fe.label} onChange={e=>updFer(i,"label",e.target.value)} placeholder="Descripción" className={`${inCls} flex-1`}/>
+                  <button onClick={()=>delFer(i)} className="text-gray-600 hover:text-red-400 flex-shrink-0"><IcTrash s={13}/></button>
+                </div>
+              ))}
+              {esFer26 && <div className="mt-4 pt-4 border-t border-gray-800">
+                <p className="text-xs text-gray-600 font-semibold mb-2">Feriados nacionales 2026 precargados</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(FER26).map(([date,label])=>(
+                    <span key={date} className="text-xs px-2 py-0.5 bg-gray-800 text-gray-500 rounded-full border border-gray-700">{fmtDate(date)} · {label}</span>
+                  ))}
+                </div>
+              </div>}
+            </>;
+          })()}
+        </div>
+        <div className="px-5 pb-5 pt-3 border-t border-gray-800 flex gap-3 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors">Cancelar</button>
+          <button onClick={()=>{
+            if(!f.materia.trim()) {setTab("info"); return alert("Ingresá el nombre de la materia");}
+            if(!f.diasSemana.length) {setTab("calendario"); return alert("Seleccioná al menos un día de clase");}
+            if(!f.fechaInicio||!f.fechaFin) {setTab("calendario"); return alert("Ingresá las fechas del ciclo");}
+            onSave(f);
+          }} className="px-4 py-2 text-sm font-semibold bg-blue-700 hover:bg-blue-600 text-white rounded-lg border border-blue-600 transition-colors">Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ STUDENT MODAL ═══════════════
+function StudentModal({student,onSave,onCancel}){
+  const [nombre,setNombre]=useState(student?.nombre||"");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-xs w-full shadow-2xl">
+        <h2 className="text-sm font-bold text-gray-200 mb-3">{student?"Editar estudiante":"Nuevo estudiante"}</h2>
+        <label className="block text-xs text-gray-500 mb-1">Apellido y nombre</label>
+        <input autoFocus value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Ej: García, Juan Manuel"
+          onKeyDown={e=>{ if(e.key==="Enter"){ if(!nombre.trim()) return; onSave(nombre.trim()); }}}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 text-gray-100 rounded-lg text-sm outline-none focus:border-blue-500 mb-4"/>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors">Cancelar</button>
+          <button onClick={()=>{ if(!nombre.trim()) return; onSave(nombre.trim()); }} className="px-4 py-2 text-sm font-semibold bg-blue-700 hover:bg-blue-600 text-white rounded-lg border border-blue-600 transition-colors">Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ IMPORT MODAL ═══════════════
+function ImportModal({onImport,onCancel}){
+  const [text,setText]=useState("");
+  const handle=()=>{
+    const nombres=text.split("\n").map(l=>l.trim()).filter(l=>l.length>0);
+    if(!nombres.length) return alert("Pegá al menos un nombre");
+    onImport(nombres);
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <h2 className="text-sm font-bold text-gray-200 mb-1">Importar estudiantes</h2>
+        <p className="text-xs text-gray-500 mb-3">Pegá la lista de nombres, uno por línea. Podés copiarla desde Excel, Word o cualquier otro editor.</p>
+        <textarea value={text} onChange={e=>setText(e.target.value)} rows={8}
+          placeholder={"García, Juan\nLópez, María\nMartínez, Pedro"}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 text-gray-100 rounded-lg text-sm outline-none focus:border-blue-500 resize-none font-mono mb-4"/>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors">Cancelar</button>
+          <button onClick={handle} className="px-4 py-2 text-sm font-semibold bg-blue-700 hover:bg-blue-600 text-white rounded-lg border border-blue-600 transition-colors">Importar ({text.split("\n").filter(l=>l.trim()).length})</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ QUICKVIEW MODAL ═══════════════
+function QuickViewModal({est,curso,numero,onClose,onPrint}){
+  const alerta=calcAlerta(est,curso);
+  const asis=calcAsis(curso,est.id);
+  const aColor={roja:"text-red-400",amarilla:"text-amber-400",verde:"text-emerald-400",gris:"text-gray-500"};
+  const aLabel={roja:"⚠ Alerta",amarilla:"↯ Seguimiento",verde:"✓ Ok",gris:"Sin datos"};
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-3" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-5 max-w-lg w-full shadow-2xl max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <div className="text-xs text-gray-500">Estudiante #{numero} · {curso.materia}</div>
+            <h2 className="text-base font-bold text-gray-50 mt-0.5">{est.nombre}</h2>
+            <span className={`text-xs font-semibold ${aColor[alerta]}`}>{aLabel[alerta]}</span>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={()=>{onClose();onPrint();}} className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-800 hover:bg-blue-700 text-blue-100 rounded-lg text-xs font-semibold border border-blue-700 transition-colors"><IcPrint s={12}/> Imprimir</button>
+            <button onClick={onClose} className="px-2.5 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 rounded-lg border border-gray-700 transition-colors">✕</button>
+          </div>
+        </div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Trabajos prácticos</div>
+        <div className="grid grid-cols-2 gap-1.5 mb-4">
+          {est.tps.map((tp,i)=>(
+            <div key={i} className="bg-gray-800 rounded-xl p-2.5 border border-gray-700">
+              <div className="text-xs text-gray-500 mb-1">{curso.nombresTP[i]||`TP ${i+1}`}</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {tp.estado?<span className={`text-xs px-1.5 py-0.5 rounded border ${cE(tp.estado)}`}>{tp.estado}</span>:<span className="text-xs text-gray-700">Sin estado</span>}
+                {tp.evaluacion?<span className={`text-xs px-1.5 py-0.5 rounded border ${cV(tp.evaluacion)}`}>{tp.evaluacion}</span>:null}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Instancias evaluativas</div>
+        <div className="grid grid-cols-3 gap-1.5 mb-4">
+          {est.examenes.map((ex,i)=>(
+            <div key={i} className="bg-gray-800 rounded-xl p-2.5 border border-gray-700 text-center">
+              <div className="text-xs text-gray-500 mb-1 truncate">{curso.nombresEx[i]||`Inst. ${i+1}`}</div>
+              <div className={`text-xl font-bold ${!ex?"text-gray-600":Number(ex)<4?"text-red-400":Number(ex)<6?"text-amber-400":"text-emerald-400"}`}>{ex||"—"}</div>
+              {ex&&<div className="text-xs text-gray-600">/10</div>}
+            </div>
+          ))}
+        </div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Concepto</div>
+        <div className="grid grid-cols-3 gap-1.5 mb-4">
+          {["1° Trim.","2° Trim.","3° Trim."].map((t,i)=>(
+            <div key={i} className="bg-gray-800 rounded-xl p-2.5 border border-gray-700 text-center">
+              <div className="text-xs text-gray-500 mb-1">{t}</div>
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${cC((est.conceptos||[])[i])}`}>{(est.conceptos||[])[i]||"—"}</span>
+            </div>
+          ))}
+        </div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Asistencia</div>
+        {(!asis||asis.tot===0)
+          ?<div className="bg-gray-800 rounded-xl p-3 border border-gray-700 text-xs text-gray-600 italic mb-4">Sin datos de asistencia registrados.</div>
+          :<div className={`rounded-xl px-4 py-3 border flex items-center justify-between gap-3 mb-4 ${asis.pct>curso.limitePct?"bg-red-950/50 border-red-800":"bg-gray-800 border-gray-700"}`}>
+            <div>
+              <div className={`text-sm font-semibold ${asis.pct>curso.limitePct?"text-red-300":"text-gray-200"}`}>{asis.aus} inasistencias de {asis.tot} clases</div>
+              {asis.pct>curso.limitePct&&<div className="text-xs text-red-400">⚠ Supera el {curso.limitePct}% del acuerdo pedagógico</div>}
+            </div>
+            <span className={`text-2xl font-black px-3 py-1 rounded-lg border ${asis.pct>curso.limitePct?"bg-red-900/60 text-red-300 border-red-700":"bg-emerald-900/50 text-emerald-300 border-emerald-700"}`}>{asis.pct}%</span>
+          </div>
+        }
+        {est.observaciones&&<>
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Observaciones</div>
+          <div className="bg-amber-950/40 border border-amber-800/50 rounded-xl p-3 text-sm text-amber-200/80">{est.observaciones}</div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ PRINT CARD ═══════════════
+function PrintCard({est,curso,numero,school,fecha,asis}){
+  const cPr=c=>({
+    "Muy bueno":{bg:"#ecfdf5",txt:"#065f46",brd:"#6ee7b7"},
+    "Bueno":{bg:"#eff6ff",txt:"#1e40af",brd:"#93c5fd"},
+    "Regular":{bg:"#fffbeb",txt:"#92400e",brd:"#fcd34d"},
+    "A mejorar":{bg:"#fef2f2",txt:"#991b1b",brd:"#fca5a5"}
+  }[c]||{bg:"#f8fafc",txt:"#94a3b8",brd:"#e2e8f0"});
+  const s={
+    card:{fontFamily:"system-ui,sans-serif",fontSize:"7.5pt",color:"#111827",padding:"4mm 5mm",border:"1px solid #d1d5db",borderRadius:"3px",boxSizing:"border-box",background:"white",height:"131mm",overflow:"hidden",display:"flex",flexDirection:"column",gap:"2mm"},
+    sec:{fontWeight:700,fontSize:"5.8pt",textTransform:"uppercase",letterSpacing:"0.07em",color:"#374151",marginBottom:"1mm"},
+    th:{padding:"0.7mm 1.5mm",background:"#f1f5f9",border:"0.4px solid #cbd5e1",fontWeight:600,textAlign:"center",fontSize:"6pt"},
+    td:{padding:"0.7mm 1.5mm",border:"0.4px solid #e5e7eb",textAlign:"center",fontSize:"6pt"},
+  };
+  const conceptos=est.conceptos||["","",""];
+  const lim=curso.limitePct||20;
+  const cursoLabel=`${curso.anio}${curso.division?" "+curso.division:""} · ${curso.materia}`;
+  return (
+    <div style={s.card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",borderBottom:"1.5px solid #1e293b",paddingBottom:"2mm"}}>
+        <div>
+          <div style={{fontSize:"5.5pt",textTransform:"uppercase",letterSpacing:"0.07em",color:"#6b7280",marginBottom:"0.5mm"}}>{curso.institucion||school} · {cursoLabel}</div>
+          <div style={{fontSize:"10pt",fontWeight:800,letterSpacing:"-0.01em"}}>{numero}. {est.nombre}</div>
+        </div>
+        <div style={{fontSize:"5.5pt",color:"#9ca3af",textAlign:"right"}}>{fecha}</div>
+      </div>
+      <div>
+        <div style={s.sec}>Trabajos prácticos</div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr>{est.tps.map((_,i)=><th key={i} style={s.th}>{curso.nombresTP[i]||`TP ${i+1}`}</th>)}</tr></thead>
+          <tbody>
+            <tr>{est.tps.map((tp,i)=>{const clr=tp.estado==="Entregado"?"#15803d":tp.estado==="Sin entregar"?"#dc2626":tp.estado==="Entregado tarde"?"#d97706":"#9ca3af";const sym=tp.estado==="Entregado"?"✓":tp.estado==="Sin entregar"?"✗":tp.estado==="Entregado tarde"?"T":"—";return <td key={i} style={{...s.td,color:clr,fontWeight:tp.estado?700:400}}>{sym}</td>;})}</tr>
+            <tr>{est.tps.map((tp,i)=>{const clr=tp.evaluacion==="Aprobado"?"#15803d":tp.evaluacion==="Corregir"?"#dc2626":tp.evaluacion==="Regular"?"#d97706":"#9ca3af";const txt=tp.evaluacion==="Aprobado"?"Apr.":tp.evaluacion==="Regular"?"Reg.":tp.evaluacion==="Corregir"?"Cor.":"—";return <td key={i} style={{...s.td,color:clr}}>{txt}</td>;})}</tr>
+          </tbody>
+        </table>
+        <div style={{fontSize:"5pt",color:"#9ca3af",marginTop:"0.4mm"}}>Fila 1: entrega (✓ Entregado · ✗ Sin entregar · T Tardío) · Fila 2: evaluación</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3mm"}}>
+        <div>
+          <div style={s.sec}>Instancias evaluativas</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>{est.examenes.map((ex,i)=>(
+            <tr key={i}><td style={{...s.td,textAlign:"left",color:"#4b5563"}}>{curso.nombresEx[i]||`Inst. ${i+1}`}</td><td style={{...s.td,fontWeight:800,fontSize:"8pt",color:ex?(Number(ex)<4?"#dc2626":Number(ex)<6?"#d97706":"#1e293b"):"#9ca3af"}}>{ex?`${ex}/10`:"—"}</td></tr>
+          ))}</tbody></table>
+        </div>
+        <div>
+          <div style={s.sec}>Concepto</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr>{["1° T","2° T","3° T"].map(t=><th key={t} style={s.th}>{t}</th>)}</tr></thead>
+            <tbody><tr>{conceptos.map((c,i)=>{const col=cPr(c);return <td key={i} style={{...s.td,background:col.bg,color:col.txt,fontWeight:c?700:400,border:`0.4px solid ${col.brd}`,fontSize:"5.5pt"}}>{c||"—"}</td>;})}</tr></tbody>
+          </table>
+        </div>
+      </div>
+      {est.observaciones&&<div><div style={s.sec}>Observaciones</div><div style={{padding:"1mm 2mm",border:"0.4px solid #fcd34d",background:"#fffbeb",borderRadius:"2px",fontSize:"7pt",color:"#374151",lineHeight:1.4}}>{est.observaciones}</div></div>}
+      <div style={{padding:"1.5mm 2mm",border:"0.8px solid #d1d5db",borderRadius:"2px",background:"#f8fafc"}}>
+        <div style={s.sec}>Asistencia</div>
+        {(!asis||asis.tot===0)
+          ?<span style={{fontSize:"7pt",color:"#9ca3af",fontStyle:"italic"}}>Sin datos cargados</span>
+          :<div style={{display:"flex",alignItems:"baseline",gap:"3mm"}}>
+            <span style={{fontSize:"8pt",fontWeight:700,color:"#1e293b"}}>{asis.aus}/{asis.tot} clases</span>
+            <span style={{fontSize:"9pt",fontWeight:900,padding:"0.4mm 2mm",borderRadius:"2px",border:`0.4px solid ${asis.pct>lim?"#fca5a5":"#6ee7b7"}`,background:asis.pct>lim?"#fef2f2":"#ecfdf5",color:asis.pct>lim?"#dc2626":"#15803d"}}>{asis.pct}% {asis.pct>lim?"⚠":""}</span>
+          </div>
+        }
+        <div style={{fontSize:"5.5pt",color:"#6b7280",marginTop:"0.8mm"}}>
+          {asis&&asis.tot>0&&asis.pct>lim
+            ?`⚠ Supera el acuerdo pedagógico. Se espera que las inasistencias no superen el ${lim}% de las clases efectivamente dadas.`
+            :`Acuerdo pedagógico: se espera que las inasistencias no superen el ${lim}% de las clases efectivamente dadas.`}
+        </div>
+      </div>
+      <div style={{marginTop:"auto",borderTop:"0.5px dashed #cbd5e1",paddingTop:"1.5mm",display:"flex",justifyContent:"flex-end"}}>
+        <div style={{fontSize:"5.5pt",color:"#d1d5db"}}>{cursoLabel} · {curso.institucion||school}</div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ SEGUIMIENTO TAB ═══════════════
+function SeguimientoTab({curso,school,updCourse,setModal,setPrint}){
+  const [qv,setQv]=useState(null);
+  const [editNom,setEditNom]=useState(null);
+  const importRef=useRef();
+  const fecha=new Date().toLocaleDateString("es-AR",{year:"numeric",month:"long",day:"numeric"});
+
+  const updTP=(estId,i,campo,val)=>updCourse(c=>({...c,estudiantes:c.estudiantes.map(e=>e.id!==estId?e:{...e,tps:e.tps.map((t,j)=>j===i?{...t,[campo]:val}:t)})}));
+  const updEx=(estId,i,val)=>{ if(val!==""&&(Number(val)<1||Number(val)>10))return; updCourse(c=>({...c,estudiantes:c.estudiantes.map(e=>e.id!==estId?e:{...e,examenes:e.examenes.map((x,j)=>j===i?val:x)})})); };
+  const updConc=(estId,t,val)=>updCourse(c=>({...c,estudiantes:c.estudiantes.map(e=>{if(e.id!==estId)return e;const cc=[...(e.conceptos||["","",""])];cc[t]=val;return{...e,conceptos:cc};})}));
+  const updObs=(estId,val)=>updCourse(c=>({...c,estudiantes:c.estudiantes.map(e=>e.id===estId?{...e,observaciones:val}:e)}));
+  const updNomTP=(i,val)=>updCourse(c=>({...c,nombresTP:c.nombresTP.map((n,j)=>j===i?val:n)}));
+  const updNomEx=(i,val)=>updCourse(c=>({...c,nombresEx:c.nombresEx.map((n,j)=>j===i?val:n)}));
+
+  const addTP=()=>updCourse(c=>({...c,cantTPs:c.cantTPs+1,nombresTP:[...c.nombresTP,`TP ${c.cantTPs+1}`],estudiantes:c.estudiantes.map(e=>({...e,tps:[...e.tps,{estado:"",evaluacion:""}]}))}));
+  const delTP=()=>{
+    if(curso.cantTPs<=1) return;
+    setModal({msg:`¿Eliminar "${curso.nombresTP[curso.cantTPs-1]}"?`,info:"Se perderán los datos de esa columna para todos los estudiantes.",danger:true,confirmLabel:"Eliminar",
+      onConfirm:()=>{ updCourse(c=>({...c,cantTPs:c.cantTPs-1,nombresTP:c.nombresTP.slice(0,-1),estudiantes:c.estudiantes.map(e=>({...e,tps:e.tps.slice(0,-1)}))})); setModal(null); }});
+  };
+  const addEx=()=>updCourse(c=>({...c,cantEx:c.cantEx+1,nombresEx:[...c.nombresEx,`Instancia ${c.cantEx+1}`],estudiantes:c.estudiantes.map(e=>({...e,examenes:[...e.examenes,""]}))}));
+  const delEx=()=>{
+    if(curso.cantEx<=1) return;
+    setModal({msg:`¿Eliminar "${curso.nombresEx[curso.cantEx-1]}"?`,info:"Se perderán los datos de esa columna.",danger:true,confirmLabel:"Eliminar",
+      onConfirm:()=>{ updCourse(c=>({...c,cantEx:c.cantEx-1,nombresEx:c.nombresEx.slice(0,-1),estudiantes:c.estudiantes.map(e=>({...e,examenes:e.examenes.slice(0,-1)}))})); setModal(null); }});
+  };
+  const addEst=nombre=>updCourse(c=>({...c,estudiantes:[...c.estudiantes,mkStudent(nombre,c.cantTPs,c.cantEx)]}));
+  const delEst=estId=>{ setModal({msg:"¿Eliminar este estudiante?",danger:true,confirmLabel:"Eliminar",onConfirm:()=>{ updCourse(c=>({...c,estudiantes:c.estudiantes.filter(e=>e.id!==estId)})); setModal(null); }}); };
+  const importEsts=nombres=>{ updCourse(c=>{const nuevos=nombres.map(n=>mkStudent(n,c.cantTPs,c.cantEx));return{...c,estudiantes:[...c.estudiantes,...nuevos]};}); setModal(null); };
+  const sortEsts=()=>updCourse(c=>({...c,estudiantes:[...c.estudiantes].sort((a,b)=>a.nombre.localeCompare(b.nombre,"es"))}));
+
+  const exportCSV=()=>{
+    const rows=[["#","Nombre",...curso.nombresTP.map(n=>n+" - Estado"),...curso.nombresTP.map(n=>n+" - Evaluación"),...curso.nombresEx,"Concepto 1°T","Concepto 2°T","Concepto 3°T","Observaciones","Inasistencias","Clases","%"].join(";")];
+    curso.estudiantes.forEach((est,idx)=>{
+      const a=calcAsis(curso,est.id);
+      const row=[idx+1,est.nombre,...est.tps.map(t=>t.estado||""),...est.tps.map(t=>t.evaluacion||""),...est.examenes,...(est.conceptos||["","",""]),est.observaciones||"",a?a.aus:"",a?a.tot:"",a?a.pct+"%":""];
+      rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";"));
+    });
+    const blob=new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`seguimiento_${curso.materia}_${curso.anio}_${new Date().toISOString().slice(0,10)}.csv`;a.click();
+  };
+
+  const doPrint=(est)=>{ setPrint({est,curso,school,fecha}); setTimeout(()=>{window.print();setPrint(null);},500); };
+  const doPrintAll=()=>{ setPrint({todos:true,curso,school,fecha}); setTimeout(()=>{window.print();setPrint(null);},500); };
+
+  const parejas=[];
+  for(let i=0;i<curso.estudiantes.length;i+=2) parejas.push(curso.estudiantes.slice(i,i+2));
+
+  return (
+    <div className="p-3">
+      {qv&&<QuickViewModal est={qv.est} curso={curso} numero={qv.num} school={school} onClose={()=>setQv(null)} onPrint={()=>doPrint(qv.est)}/>}
+      {editNom&&(
+        editNom.multi
+        ?(
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-5 max-w-sm w-full mx-4 shadow-2xl">
+              <p className="text-xs text-gray-400 font-semibold mb-3">Renombrar instancias evaluativas</p>
+              {Array.from({length:curso.cantEx},(_,i)=>(
+                <div key={i} className="mb-2">
+                  <label className="block text-xs text-gray-600 mb-0.5">Instancia {i+1}</label>
+                  <input defaultValue={curso.nombresEx[i]||`Instancia ${i+1}`} id={`ex-rename-${i}`}
+                    placeholder={`Ej: Recuperatorio, Examen parcial, Oral...`}
+                    className="w-full px-3 py-1.5 bg-gray-800 border border-gray-600 text-gray-100 rounded-lg text-sm outline-none focus:border-indigo-500"/>
+                </div>
+              ))}
+              <div className="flex gap-3 justify-end mt-3">
+                <button onClick={()=>setEditNom(null)} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700">Cancelar</button>
+                <button onClick={()=>{
+                  Array.from({length:curso.cantEx},(_,i)=>{
+                    const v=document.getElementById(`ex-rename-${i}`)?.value;
+                    if(v!==undefined) updNomEx(i,v||`Instancia ${i+1}`);
+                  });
+                  setEditNom(null);
+                }} className="px-3 py-1.5 text-xs font-semibold bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg border border-indigo-600">Guardar</button>
+              </div>
+            </div>
+          </div>
+        )
+        :(
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-5 max-w-xs w-full mx-4 shadow-2xl">
+              <p className="text-xs text-gray-500 mb-2">Renombrar {editNom.tipo==="tp"?`TP ${editNom.idx+1}`:`Instancia ${editNom.idx+1}`}</p>
+              <input autoFocus defaultValue={editNom.tipo==="tp"?curso.nombresTP[editNom.idx]:curso.nombresEx[editNom.idx]}
+                placeholder={editNom.tipo==="ex"?"Ej: Oral, Recuperatorio, Parcial...":""}
+                onKeyDown={e=>{ if(e.key==="Enter"){if(editNom.tipo==="tp")updNomTP(editNom.idx,e.target.value||`TP ${editNom.idx+1}`);else updNomEx(editNom.idx,e.target.value||`Instancia ${editNom.idx+1}`);setEditNom(null);}if(e.key==="Escape")setEditNom(null);}}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-600 text-gray-100 rounded-lg text-sm outline-none focus:border-blue-500 mb-4"/>
+              <div className="flex gap-3 justify-end">
+                <button onClick={()=>setEditNom(null)} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700">Cancelar</button>
+                <button onClick={e=>{ const input=e.target.closest('.bg-gray-900').querySelector('input'); if(editNom.tipo==="tp")updNomTP(editNom.idx,input.value||`TP ${editNom.idx+1}`);else updNomEx(editNom.idx,input.value||`Instancia ${editNom.idx+1}`);setEditNom(null);}} className="px-3 py-1.5 text-xs font-semibold bg-blue-700 hover:bg-blue-600 text-white rounded-lg border border-blue-600">Guardar</button>
+              </div>
+            </div>
+          </div>
+        )
+      )}
+      {/* Toolbar */}
+      <div className="flex flex-wrap gap-2 mb-3">
+        <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-xl px-2 py-1.5">
+          <span className="text-xs text-gray-400 px-1 font-mono">TPs ({curso.cantTPs})</span>
+          <button onClick={addTP} className="p-1 bg-blue-800 hover:bg-blue-700 text-blue-200 rounded-lg transition-colors"><IcPlus s={11}/></button>
+          <button onClick={delTP} disabled={curso.cantTPs<=1} className="p-1 bg-gray-700 hover:bg-red-900 text-gray-400 hover:text-red-300 rounded-lg transition-colors disabled:opacity-25 disabled:cursor-not-allowed"><IcMinus s={11}/></button>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-xl px-2 py-1.5">
+          <span className="text-xs text-gray-400 px-1 font-mono">Inst. ({curso.cantEx})</span>
+          <button onClick={addEx} className="p-1 bg-indigo-800 hover:bg-indigo-700 text-indigo-200 rounded-lg transition-colors"><IcPlus s={11}/></button>
+          <button onClick={delEx} disabled={curso.cantEx<=1} className="p-1 bg-gray-700 hover:bg-red-900 text-gray-400 hover:text-red-300 rounded-lg transition-colors disabled:opacity-25 disabled:cursor-not-allowed"><IcMinus s={11}/></button>
+          <button onClick={()=>setEditNom({tipo:"ex",idx:0,multi:true})} className="p-1 bg-gray-700 hover:bg-indigo-900 text-gray-500 hover:text-indigo-300 rounded-lg transition-colors" title="Renombrar instancias"><IcEdit s={11}/></button>
+        </div>
+        <button onClick={()=>setModal({isImport:true})} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 px-3 py-2 rounded-xl text-xs transition-colors"><IcImport/>Importar lista</button>
+        <button onClick={sortEsts} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 px-3 py-2 rounded-xl text-xs transition-colors"><IcSort/>Ordenar A-Z</button>
+        <button onClick={doPrintAll} className="flex items-center gap-1.5 bg-teal-800 hover:bg-teal-700 border border-teal-700 text-teal-100 px-3 py-2 rounded-xl text-xs font-semibold transition-colors"><IcPrint/>Imprimir todos</button>
+        <button onClick={exportCSV} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-emerald-400 px-3 py-2 rounded-xl text-xs transition-colors"><IcDown/>CSV</button>
+        <button onClick={()=>setModal({isAddStudent:true})} className="flex items-center gap-1.5 bg-blue-700 hover:bg-blue-600 border border-blue-600 text-white px-3 py-2 rounded-xl text-xs font-semibold transition-colors"><IcPlus/>Estudiante</button>
+      </div>
+      {curso.estudiantes.length===0&&(
+        <div className="text-center py-16 text-gray-600">
+          <div className="text-4xl mb-3">👥</div>
+          <div className="text-sm font-semibold text-gray-500 mb-1">Sin estudiantes</div>
+          <div className="text-xs">Usá los botones de arriba para agregar o importar.</div>
+        </div>
+      )}
+      {curso.estudiantes.length>0&&(
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden shadow-xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left whitespace-nowrap">
+              <thead className="text-gray-500 bg-gray-950 border-b border-gray-800 sticky top-0 z-10">
+                <tr>
+                  <th className="px-2 py-2 sticky left-0 bg-gray-950 z-20 border-r border-gray-800 text-center w-6 font-mono">#</th>
+                  <th className="px-2 py-2 sticky left-6 bg-gray-950 z-20 border-r border-gray-800 w-6 text-center">●</th>
+                  <th className="px-3 py-2 font-semibold uppercase tracking-wide sticky left-12 bg-gray-950 z-20 border-r border-gray-800 min-w-[150px]">Nombre</th>
+                  {Array.from({length:curso.cantTPs},(_,i)=>(
+                    <th key={i} className="px-2 py-2 font-semibold uppercase tracking-wide border-r border-gray-800 text-center group" colSpan={2}>
+                      <div className="flex items-center justify-center gap-1">
+                        <span className="truncate max-w-[90px]">{curso.nombresTP[i]||`TP ${i+1}`}</span>
+                        <button onClick={()=>setEditNom({tipo:"tp",idx:i})} className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-blue-400 flex-shrink-0"><IcEdit s={10}/></button>
+                      </div>
+                    </th>
+                  ))}
+                  {Array.from({length:curso.cantEx},(_,i)=>(
+                    <th key={i} className="px-2 py-2 font-semibold uppercase tracking-wide border-r border-gray-800 text-center group">
+                      <div className="flex items-center justify-center gap-1">
+                        <span className="truncate max-w-[80px]">{curso.nombresEx[i]||`Inst.${i+1}`}</span>
+                        <button onClick={()=>setEditNom({tipo:"ex",idx:i})} className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-indigo-400 flex-shrink-0"><IcEdit s={10}/></button>
+                      </div>
+                    </th>
+                  ))}
+                  <th className="px-2 py-2 font-semibold uppercase tracking-wide border-r border-gray-800 text-center" colSpan={3}>Concepto</th>
+                  <th className="px-2 py-2 font-semibold uppercase tracking-wide border-r border-gray-800 text-center">Asistencia</th>
+                  <th className="px-2 py-2 font-semibold uppercase tracking-wide border-r border-gray-800">Observaciones</th>
+                  <th className="px-2 py-2 sticky right-0 bg-gray-950 z-20"/>
+                </tr>
+                <tr className="bg-gray-900 border-b border-gray-800 text-gray-600">
+                  <th className="sticky left-0 bg-gray-900 z-20 border-r border-gray-800"/><th className="sticky left-6 bg-gray-900 z-20 border-r border-gray-800"/><th className="sticky left-12 bg-gray-900 z-20 border-r border-gray-800"/>
+                  {Array.from({length:curso.cantTPs},(_,i)=>(
+                    <React.Fragment key={i}>
+                      <th className="px-2 py-1 font-medium border-r border-gray-800 min-w-[120px]">Estado</th>
+                      <th className="px-2 py-1 font-medium border-r border-gray-800 min-w-[105px]">Evaluación</th>
+                    </React.Fragment>
+                  ))}
+                  {Array.from({length:curso.cantEx},(_,i)=><th key={i} className="px-2 py-1 font-medium border-r border-gray-800 min-w-[75px] text-center">Nota /10</th>)}
+                  {["1° T","2° T","3° T"].map(t=><th key={t} className="px-2 py-1 font-medium border-r border-gray-800 min-w-[105px] text-center">{t}</th>)}
+                  <th className="px-2 py-1 font-medium border-r border-gray-800 min-w-[95px] text-center">Aus/Cls %</th>
+                  <th className="px-2 py-1 font-medium border-r border-gray-800 min-w-[180px]">Notas</th>
+                  <th className="sticky right-0 bg-gray-900 z-20"/>
+                </tr>
+              </thead>
+              <tbody>
+                {curso.estudiantes.map((est,idx)=>{
+                  const alerta=calcAlerta(est,curso);
+                  const asis=calcAsis(curso,est.id);
+                  return (
+                    <tr key={est.id} className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-2 py-1 text-gray-600 font-mono text-center sticky left-0 bg-inherit border-r border-gray-800">{idx+1}</td>
+                      <td className="px-2 py-1 text-center sticky left-6 bg-inherit border-r border-gray-800"><AlertDot nivel={alerta}/></td>
+                      <td className="px-3 py-1 font-medium text-gray-100 sticky left-12 bg-inherit z-10 border-r border-gray-800">
+                        <button onClick={()=>setQv({est,num:idx+1})} className="hover:text-blue-400 transition-colors text-left truncate max-w-[140px] block">{est.nombre}</button>
+                      </td>
+                      {est.tps.map((tp,i)=>(
+                        <React.Fragment key={i}>
+                          <td className="px-1 py-1 border-r border-gray-800/50">
+                            <select value={tp.estado} onChange={e=>updTP(est.id,i,"estado",e.target.value)} className={`w-full px-1 py-0.5 text-xs border rounded outline-none ${cE(tp.estado)}`}>
+                              {ESTADO_OPTS.map(o=><option key={o} value={o}>{o||"—"}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-1 py-1 border-r border-gray-800">
+                            <select value={tp.evaluacion} onChange={e=>updTP(est.id,i,"evaluacion",e.target.value)} className={`w-full px-1 py-0.5 text-xs border rounded outline-none ${cV(tp.evaluacion)}`}>
+                              {EVAL_OPTS.map(o=><option key={o} value={o}>{o||"—"}</option>)}
+                            </select>
+                          </td>
+                        </React.Fragment>
+                      ))}
+                      {est.examenes.map((ex,i)=>(
+                        <td key={i} className="px-1 py-1 border-r border-gray-800 text-center">
+                          <input type="number" min="1" max="10" step="0.1" value={ex} onChange={e=>updEx(est.id,i,e.target.value)}
+                            className={`w-11 px-1 py-0.5 text-center text-xs border rounded outline-none bg-gray-800 text-gray-100 ${ex&&Number(ex)<4?"border-red-700":ex&&Number(ex)<6?"border-amber-700":"border-gray-700"}`} placeholder="—"/>
+                        </td>
+                      ))}
+                      {[0,1,2].map(t=>(
+                        <td key={t} className="px-1 py-1 border-r border-gray-800 text-center">
+                          <select value={(est.conceptos||["","",""])[t]} onChange={e=>updConc(est.id,t,e.target.value)} className={`w-full px-1 py-0.5 text-xs border rounded outline-none ${cC((est.conceptos||["","",""])[t])}`}>
+                            {CONC_OPTS.map(o=><option key={o} value={o}>{o||"—"}</option>)}
+                          </select>
+                        </td>
+                      ))}
+                      <td className="px-1 py-1 border-r border-gray-800 text-center">
+                        {(!asis||asis.tot===0)?<span className="text-gray-700 text-xs">—</span>
+                          :<span className={`text-xs font-mono ${cPct(asis.pct)}`}>{asis.aus}/{asis.tot} ({asis.pct}%)</span>}
+                      </td>
+                      <td className="px-1 py-1 border-r border-gray-800">
+                        <input type="text" value={est.observaciones||""} onChange={e=>updObs(est.id,e.target.value)}
+                          className="w-full px-1.5 py-0.5 text-xs border border-gray-700 bg-gray-800 text-gray-200 rounded outline-none focus:ring-1 focus:ring-orange-600 placeholder-gray-700" placeholder="Notas..."/>
+                      </td>
+                      <td className="px-1 py-1 sticky right-0 bg-inherit z-10 text-center">
+                        <div className="flex gap-1">
+                          <button onClick={()=>doPrint(est)} className="p-1 text-gray-600 hover:text-blue-400 rounded"><IcPrint s={12}/></button>
+                          <button onClick={()=>setModal({isEditStudent:{est,idx}})} className="p-1 text-gray-600 hover:text-gray-300 rounded"><IcEdit s={12}/></button>
+                          <button onClick={()=>delEst(est.id)} className="p-1 text-gray-600 hover:text-red-400 rounded"><IcTrash s={12}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════ ASISTENCIA TAB ═══════════════
+function AsistenciaTab({curso,updCourse,setModal}){
+  const scrollRef=useRef();
+  const todayRef=useRef();
+  const MCOL=["bg-sky-950/40","bg-violet-950/40","bg-teal-950/40","bg-rose-950/40","bg-amber-950/40","bg-emerald-950/40","bg-cyan-950/40","bg-pink-950/40"];
+
+  useEffect(()=>{
+    if(!curso.fechasClase||!curso.fechasClase.length) {
+      updCourse(c=>({...c,fechasClase:genFechas(c,null),asistencia:{}}));
+      return;
+    }
+    setTimeout(()=>{
+      if(todayRef.current&&scrollRef.current){
+        const off=todayRef.current.offsetLeft-scrollRef.current.offsetLeft-200;
+        scrollRef.current.scrollLeft=Math.max(0,off);
+      }
+    },200);
+  },[curso.id]);
+
+  const clickCell=(estId,di)=>{
+    const f=curso.fechasClase[di]; if(!f?.active) return;
+    updCourse(c=>{
+      const att={...c.asistencia,[estId]:[...(c.asistencia[estId]||[])]};
+      const cur=att[estId][di]||"";
+      att[estId][di]=cur===""?"P":cur==="P"?"A":"";
+      return{...c,asistencia:att};
+    });
+  };
+
+  const clickDate=(di)=>{
+    const f=curso.fechasClase[di]; if(!f) return;
+    if(f.active){
+      const dobj=d2d(f.date);
+      setModal({msg:`¿Desactivar la clase del ${DIAS[dobj.getDay()]} ${dobj.getDate()} de ${MES_C[dobj.getMonth()]}?`,
+        info:"No contará como clase dada. Hacé clic nuevamente en el encabezado para reactivarla.",danger:true,confirmLabel:"Desactivar",
+        onConfirm:()=>{ updCourse(c=>({...c,fechasClase:c.fechasClase.map((fd,i)=>i===di?{...fd,active:false,motivo:"manual"}:fd)})); setModal(null); }});
+    } else if(f.motivo==="manual"){
+      updCourse(c=>({...c,fechasClase:c.fechasClase.map((fd,i)=>i===di?{...fd,active:true,motivo:null}:fd)}));
+    } else {
+      setModal({msg:`Fecha no disponible`,info:`Esta fecha es ${f.motivo==="vac"?"un período de vacaciones":"un feriado nacional"} y no puede activarse.`,confirmLabel:"Entendido",onConfirm:()=>setModal(null)});
+    }
+  };
+
+  const regenFechas=()=>{
+    setModal({msg:"¿Regenerar las fechas de clase?",info:"Se recalcularán los días según la configuración actual del curso. Las clases desactivadas manualmente se preservarán; los registros de asistencia de fechas eliminadas se perderán.",danger:true,confirmLabel:"Regenerar",
+      onConfirm:()=>{ updCourse(c=>({...c,fechasClase:genFechas(c,c.fechasClase),asistencia:{}})); setModal(null); }});
+  };
+
+  if(!curso.fechasClase) return <div className="p-6 text-center text-gray-500 text-sm">Generando fechas...</div>;
+
+  const hoy=hoy0();
+  const total=curso.fechasClase.filter(f=>f.active).length;
+  const dadas=curso.fechasClase.filter(f=>f.active&&d2d(f.date)<=hoy).length;
+
+  let mIdx=-1,mCI=-1;
+  const colColors=curso.fechasClase.map(f=>{ const m=d2d(f.date).getMonth(); if(m!==mIdx){mIdx=m;mCI=(mCI+1)%MCOL.length;} return MCOL[mCI]; });
+
+  // Month groups
+  const mGroups=[];
+  let cm=-1,cnt=0;
+  curso.fechasClase.forEach(f=>{ const m=d2d(f.date).getMonth(); if(m!==cm){if(cm>=0)mGroups.push({m:cm,cnt,ci:mCI});cm=m;cnt=1;}else cnt++; });
+  if(cm>=0) mGroups.push({m:cm,cnt});
+
+  return (
+    <div className="p-3">
+      <div className="flex flex-wrap gap-3 mb-3 items-center">
+        <div className="flex gap-4 bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-xs">
+          <span className="text-gray-500">Clases programadas: <span className="text-gray-300 font-semibold">{total}</span></span>
+          <span className="text-gray-500">Dadas hasta hoy: <span className="text-blue-400 font-semibold">{dadas}</span></span>
+          <span className="text-gray-500">Feriados/vac.: <span className="text-gray-500">{curso.fechasClase.filter(f=>!f.active&&f.motivo!=="manual").length}</span></span>
+          <span className="text-gray-500">Desactivadas: <span className="text-orange-400">{curso.fechasClase.filter(f=>!f.active&&f.motivo==="manual").length}</span></span>
+        </div>
+        <button onClick={regenFechas} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-500 hover:text-gray-200 px-3 py-2 rounded-xl text-xs transition-colors">↺ Regenerar fechas</button>
+        <div className="flex gap-2 items-center text-xs">
+          {[["bg-emerald-800/70 border-emerald-700","P","Presente"],["bg-red-900/70 border-red-700","A","Ausente"]].map(([cls,sym,lbl])=>(
+            <div key={sym} className="flex items-center gap-1">
+              <div className={`w-5 h-5 flex items-center justify-center text-xs font-bold border rounded ${cls}`}>{sym}</div>
+              <span className="text-gray-600">{lbl}</span>
+            </div>
+          ))}
+          <span className="text-gray-700">· Clic en fecha: desactivar</span>
+        </div>
+      </div>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="overflow-x-auto" ref={scrollRef}>
+          <table className="text-xs whitespace-nowrap border-collapse">
+            <thead>
+              <tr className="bg-gray-950 border-b border-gray-800/50">
+                <th colSpan={2} className="sticky left-0 z-20 bg-gray-950 border-r border-gray-800 px-1 py-1"/>
+                {(()=>{
+                  let gi=-1;
+                  return mGroups.map((g,i)=>{gi++;return(
+                    <th key={i} colSpan={g.cnt} className={`text-center text-gray-500 font-semibold text-xs py-0.5 border-r border-gray-800/60 ${MCOL[gi%MCOL.length]}`}>{MES_F[g.m]}</th>
+                  );});
+                })()}
+                <th colSpan={2} className="sticky right-0 z-20 bg-gray-950 border-l border-gray-800"/>
+              </tr>
+              <tr className="bg-gray-950 border-b border-gray-800">
+                <th className="sticky left-0 z-20 bg-gray-950 border-r border-gray-800 text-center font-mono text-gray-600 py-1" style={{width:26}}>#</th>
+                <th className="sticky bg-gray-950 z-20 border-r border-gray-800 px-3 py-1 text-left font-semibold text-gray-400 uppercase tracking-wide" style={{left:26,minWidth:160}}>Nombre</th>
+                {curso.fechasClase.map((f,di)=>{
+                  const dobj=d2d(f.date); const today=isToday(f.date); const past=isPast(f.date); const man=f.motivo==="manual";
+                  return (
+                    <th key={di} ref={today?todayRef:null}
+                      onClick={()=>clickDate(di)}
+                      className={`border-r border-gray-800/50 text-center select-none ${colColors[di]} ${!f.active?"opacity-30":""} ${today?"ring-1 ring-inset ring-blue-500":""} ${f.active||man?"cursor-pointer hover:opacity-75":"cursor-default"}`}
+                      style={{width:28,minWidth:28,padding:"2px 1px"}}>
+                      <div className="flex flex-col items-center gap-0">
+                        <span className="text-gray-600 text-xs leading-none">{DIAS[dobj.getDay()]}</span>
+                        <span className={`font-bold leading-none mt-0.5 ${today?"text-blue-400":past&&f.active?"text-gray-200":"text-gray-600"}`}>{dobj.getDate()}</span>
+                        <span className="text-gray-600 leading-none" style={{fontSize:9}}>{MES_C[dobj.getMonth()]}</span>
+                        {man&&<span className="text-orange-500" style={{fontSize:9}}>↯</span>}
+                      </div>
+                    </th>
+                  );
+                })}
+                <th className="sticky z-20 bg-gray-950 border-l border-gray-800 text-center font-semibold text-gray-500 uppercase" style={{right:40,width:40,padding:"2px 3px"}}>Aus.</th>
+                <th className="sticky right-0 z-20 bg-gray-950 border-l border-gray-800 text-center font-semibold text-gray-500 uppercase" style={{width:40,padding:"2px 3px"}}>%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {curso.estudiantes.map((est,eidx)=>{
+                const asis=calcAsis(curso,est.id);
+                return (
+                  <tr key={est.id} className="border-b border-gray-800/50 hover:bg-gray-800/20 transition-colors">
+                    <td className="sticky left-0 bg-inherit z-10 border-r border-gray-800 text-center text-gray-600 font-mono" style={{width:26,padding:"2px 0"}}>{eidx+1}</td>
+                    <td className="sticky bg-inherit z-10 border-r border-gray-800 font-medium text-gray-200 truncate px-2 py-1" style={{left:26,minWidth:160,maxWidth:160}}>{est.nombre}</td>
+                    {curso.fechasClase.map((f,di)=>{
+                      const val=(curso.asistencia[est.id]||[])[di]||"";
+                      const today=isToday(f.date);
+                      let cls="";
+                      if(!f.active) cls="bg-gray-900/60 cursor-default";
+                      else if(val==="P") cls="bg-emerald-800/60 text-emerald-200 cell-att hover:bg-emerald-700/70";
+                      else if(val==="A") cls="bg-red-900/60 text-red-200 cell-att hover:bg-red-800/70";
+                      else cls="text-gray-700 cell-att hover:bg-gray-700/40";
+                      return (
+                        <td key={di} onClick={()=>clickCell(est.id,di)}
+                          className={`border-r border-gray-800/30 text-center ${cls} ${colColors[di]} ${today?"ring-1 ring-inset ring-blue-500/50":""}`}
+                          style={{width:28,minWidth:28,padding:"1px 0"}}>
+                          <div className="w-full flex items-center justify-center font-bold" style={{height:22,fontSize:11}}>
+                            {!f.active?"—":val==="P"?"P":val==="A"?"A":"·"}
+                          </div>
+                        </td>
+                      );
+                    })}
+                    <td className={`sticky bg-inherit z-10 border-l border-gray-800 text-center font-bold ${cPct(asis?.pct||0)}`} style={{right:40,width:40,padding:"2px",fontSize:11}}>{asis&&asis.aus>0?asis.aus:"—"}</td>
+                    <td className={`sticky right-0 bg-inherit z-10 border-l border-gray-800 text-center font-bold ${cPct(asis?.pct||0)}`} style={{width:40,padding:"2px",fontSize:11}}>{asis&&asis.tot>0?`${asis.pct}%`:"—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ COURSE VIEW ═══════════════
+function CourseView({courseId,schoolId,data,updateData,onBack,setGlobalModal}){
+  const [tab,setTab]=useState("seg");
+  const [editCourse,setEditCourse]=useState(false);
+  const [modal,setModal]=useState(null);
+  const [print,setPrint]=useState(null);
+
+  const school=data.escuelas.find(s=>s.id===schoolId);
+  const curso=school?.cursos.find(c=>c.id===courseId);
+  if(!school||!curso) return null;
+
+  const updCourse=fn=>updateData(d=>{
+    d.escuelas=d.escuelas.map(s=>s.id!==schoolId?s:{...s,cursos:s.cursos.map(c=>c.id!==courseId?c:fn(c))});
+    return d;
+  });
+
+  const handleModal=(m)=>{
+    if(!m){setModal(null);return;}
+    if(m.isImport){setModal(m);return;}
+    if(m.isAddStudent){setModal(m);return;}
+    if(m.isEditStudent){setModal(m);return;}
+    setModal(m);
+  };
+
+  const fecha=new Date().toLocaleDateString("es-AR",{year:"numeric",month:"long",day:"numeric"});
+  const parejas=[];
+  for(let i=0;i<curso.estudiantes.length;i+=2) parejas.push(curso.estudiantes.slice(i,i+2));
+  const cursoLabel=`${curso.anio}${curso.division?" "+curso.division:""} · ${curso.materia}`;
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-gray-100 pb-16">
+      {/* Confirm / general modal */}
+      {modal&&!modal.isImport&&!modal.isAddStudent&&!modal.isEditStudent&&(
+        <ConfirmModal msg={modal.msg} info={modal.info} confirmLabel={modal.confirmLabel} danger={modal.danger}
+          onConfirm={modal.onConfirm} onCancel={modal.onCancel!==undefined?modal.onCancel:()=>setModal(null)}/>
+      )}
+      {modal?.isImport&&<ImportModal onImport={nombres=>{
+        updCourse(c=>{const n=nombres.map(nom=>mkStudent(nom,c.cantTPs,c.cantEx));return{...c,estudiantes:[...c.estudiantes,...n]};});
+        setModal(null);
+      }} onCancel={()=>setModal(null)}/>}
+      {modal?.isAddStudent&&<StudentModal onSave={nombre=>{
+        updCourse(c=>({...c,estudiantes:[...c.estudiantes,mkStudent(nombre,c.cantTPs,c.cantEx)]})); setModal(null);
+      }} onCancel={()=>setModal(null)}/>}
+      {modal?.isEditStudent&&<StudentModal student={modal.isEditStudent.est} onSave={nombre=>{
+        updCourse(c=>({...c,estudiantes:c.estudiantes.map((e,i)=>i===modal.isEditStudent.idx?{...e,nombre}:e)})); setModal(null);
+      }} onCancel={()=>setModal(null)}/>}
+      {editCourse&&<CourseModal course={curso} schoolName={school.nombre} onSave={form=>{
+        updCourse(c=>({...c,...form})); setEditCourse(false);
+      }} onCancel={()=>setEditCourse(false)}/>}
+
+      {/* Print zone */}
+      {print&&(
+        <div className="hidden print:block">
+          {print.todos?(
+            parejas.map((par,pi)=>(
+              <div key={pi} className="print-break" style={{display:"flex",flexDirection:"column",gap:"5mm",padding:0,height:"281mm"}}>
+                {par.map(est=>(
+                  <PrintCard key={est.id} est={est} curso={curso} numero={curso.estudiantes.findIndex(e=>e.id===est.id)+1} school={school.nombre} fecha={fecha} asis={calcAsis(curso,est.id)}/>
+                ))}
+              </div>
+            ))
+          ):(
+            <PrintCard est={print.est} curso={curso} numero={curso.estudiantes.findIndex(e=>e.id===print.est.id)+1} school={school.nombre} fecha={fecha} asis={calcAsis(curso,print.est.id)}/>
+          )}
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="no-print bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
+        <button onClick={onBack} className="p-1.5 text-gray-500 hover:text-gray-200 rounded-lg hover:bg-gray-800 transition-colors"><IcBack/></button>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-gray-500 truncate">{school.nombre}</div>
+          <div className="text-sm font-bold text-gray-100 truncate">{cursoLabel}</div>
+        </div>
+        <button onClick={()=>setEditCourse(true)} className="p-1.5 text-gray-500 hover:text-gray-200 rounded-lg hover:bg-gray-800 transition-colors"><IcGear/></button>
+      </div>
+
+      {/* Tabs */}
+      <div className="no-print flex gap-1 px-4 py-2 bg-gray-900 border-b border-gray-800">
+        <button onClick={()=>setTab("seg")} className={`px-4 py-1.5 text-xs font-semibold rounded-xl border transition-colors ${tab==="seg"?"bg-blue-700 border-blue-600 text-white":"bg-gray-800 border-gray-700 text-gray-400"}`}>Seguimiento</button>
+        <button onClick={()=>setTab("asi")} className={`px-4 py-1.5 text-xs font-semibold rounded-xl border transition-colors ${tab==="asi"?"bg-blue-700 border-blue-600 text-white":"bg-gray-800 border-gray-700 text-gray-400"}`}>Asistencia</button>
+      </div>
+
+      <div className="no-print">
+        {tab==="seg"&&<SeguimientoTab curso={curso} school={school.nombre} updCourse={updCourse} setModal={handleModal} setPrint={setPrint}/>}
+        {tab==="asi"&&<AsistenciaTab curso={curso} updCourse={updCourse} setModal={handleModal}/>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ HOME VIEW ═══════════════
+function HomeView({data,updateData,onSelectCourse}){
+  const [addSchool,setAddSchool]=useState(false);
+  const [editSchool,setEditSchool]=useState(null);
+  const [addCourse,setAddCourse]=useState(null);
+  const [editCourse,setEditCourse]=useState(null);
+  const [modal,setModal]=useState(null);
+  const [anioFilter,setAnioFilter]=useState(new Date().getFullYear());
+  const importRef=useRef();
+
+  const years=[];
+  data.escuelas.forEach(s=>s.cursos.forEach(c=>{const y=isoYear(c.fechaInicio);if(!years.includes(y))years.push(y);}));
+  years.sort((a,b)=>b-a);
+  if(!years.includes(anioFilter)&&years.length>0) {};
+
+  const saveSchool=(nombre,color,id)=>updateData(d=>{
+    if(id) d.escuelas=d.escuelas.map(s=>s.id===id?{...s,nombre,color}:s);
+    else d.escuelas=[...d.escuelas,mkSchool(nombre,color)];
+    return d;
+  });
+  const delSchool=id=>{ setModal({msg:"¿Eliminar esta institución y todos sus cursos?",danger:true,confirmLabel:"Eliminar",
+    onConfirm:()=>{ updateData(d=>{d.escuelas=d.escuelas.filter(s=>s.id!==id);return d;}); setModal(null); }}); };
+
+  const saveCourse=(schoolId,form,courseId)=>updateData(d=>{
+    d.escuelas=d.escuelas.map(s=>{
+      if(s.id!==schoolId) return s;
+      if(courseId) return {...s,cursos:s.cursos.map(c=>c.id===courseId?{...c,...form}:c)};
+      return {...s,cursos:[...s.cursos,mkCourse({...form,institucion:form.institucion||s.nombre})]};
+    });
+    return d;
+  });
+  const delCourse=(schoolId,courseId)=>{ setModal({msg:"¿Eliminar este curso y todos sus datos?",danger:true,confirmLabel:"Eliminar",
+    onConfirm:()=>{ updateData(d=>{d.escuelas=d.escuelas.map(s=>s.id!==schoolId?s:{...s,cursos:s.cursos.filter(c=>c.id!==courseId)});return d;}); setModal(null); }}); };
+  const dupCourse=(schoolId,courseId)=>updateData(d=>{
+    d.escuelas=d.escuelas.map(s=>{
+      if(s.id!==schoolId) return s;
+      const orig=s.cursos.find(c=>c.id===courseId);
+      if(!orig) return s;
+      const nuevo=mkCourse({...orig,id:uid(),estudiantes:[],fechasClase:null,asistencia:{},division:(orig.division||"")+" (copia)"});
+      return {...s,cursos:[...s.cursos,nuevo]};
+    });
+    return d;
+  });
+
+  const exportBackup=()=>{
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`profe_backup_${new Date().toISOString().slice(0,10)}.json`;a.click();
+  };
+  const importBackup=e=>{
+    const file=e.target.files[0];if(!file)return;
+    const r=new FileReader();
+    r.onload=ev=>{ try{const d=JSON.parse(ev.target.result);updateData(()=>d);alert("Backup restaurado.");} catch{alert("Archivo inválido.");} };
+    r.readAsText(file);e.target.value="";
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      {modal&&<ConfirmModal {...modal} onCancel={()=>setModal(null)}/>}
+      {addSchool&&<SchoolModal onSave={(n,c)=>{saveSchool(n.nombre,n.color,null);setAddSchool(false);}} onCancel={()=>setAddSchool(false)}/>}
+      {editSchool&&<SchoolModal school={editSchool} onSave={(n)=>{saveSchool(n.nombre,n.color,editSchool.id);setEditSchool(null);}} onCancel={()=>setEditSchool(null)}/>}
+      {addCourse&&<CourseModal schoolName={data.escuelas.find(s=>s.id===addCourse)?.nombre} onSave={form=>{saveCourse(addCourse,form,null);setAddCourse(null);}} onCancel={()=>setAddCourse(null)}/>}
+      {editCourse&&<CourseModal course={editCourse.c} schoolName={data.escuelas.find(s=>s.id===editCourse.sId)?.nombre} onSave={form=>{saveCourse(editCourse.sId,form,editCourse.c.id);setEditCourse(null);}} onCancel={()=>setEditCourse(null)}/>}
+      <input ref={importRef} type="file" accept=".json" className="hidden" onChange={importBackup}/>
+
+      {/* Header */}
+      <header className="bg-gray-900 border-b border-gray-800 px-4 py-4 sticky top-0 z-10">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 max-w-5xl mx-auto">
+          <div>
+            <h1 className="text-base font-bold text-gray-50 tracking-tight">📋 Planilla del Profe</h1>
+            <p className="text-gray-500 text-xs mt-0.5">Seguimiento académico y asistencia</p>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            {years.length>0&&(
+              <select value={anioFilter} onChange={e=>setAnioFilter(Number(e.target.value))} className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-300 rounded-xl text-xs outline-none">
+                {years.map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+            )}
+            <button onClick={exportBackup} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 px-3 py-2 rounded-xl text-xs transition-colors"><IcDown/>Backup</button>
+            <button onClick={()=>importRef.current.click()} className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 px-3 py-2 rounded-xl text-xs transition-colors"><IcUp/>Restaurar</button>
+            <button onClick={()=>setAddSchool(true)} className="flex items-center gap-1.5 bg-blue-700 hover:bg-blue-600 border border-blue-600 text-white px-3 py-2 rounded-xl text-xs font-semibold transition-colors"><IcPlus/>Nueva institución</button>
+          </div>
+        </div>
+      </header>
+
+      <div className="p-4 max-w-5xl mx-auto">
+        {data.escuelas.length===0&&(
+          <div className="text-center py-24">
+            <div className="text-6xl mb-4">🏫</div>
+            <h2 className="text-lg font-bold text-gray-400 mb-2">Bienvenido</h2>
+            <p className="text-gray-600 text-sm mb-6 max-w-xs mx-auto">Empezá creando tu primera institución para organizar tus cursos.</p>
+            <button onClick={()=>setAddSchool(true)} className="flex items-center gap-2 bg-blue-700 hover:bg-blue-600 border border-blue-600 text-white px-5 py-3 rounded-xl text-sm font-semibold transition-colors mx-auto"><IcPlus/>Crear primera institución</button>
+          </div>
+        )}
+        {data.escuelas.map(school=>{
+          const cursosAnio=school.cursos.filter(c=>isoYear(c.fechaInicio)===anioFilter);
+          return (
+            <div key={school.id} className="mb-5">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{background:school.color}}/>
+                <h2 className="text-sm font-bold text-gray-300">{school.nombre}</h2>
+                <div className="flex-1 border-t border-gray-800"/>
+                <button onClick={()=>setEditSchool(school)} className="p-1 text-gray-600 hover:text-gray-300 rounded"><IcEdit s={12}/></button>
+                <button onClick={()=>delSchool(school.id)} className="p-1 text-gray-600 hover:text-red-400 rounded"><IcTrash s={12}/></button>
+                <button onClick={()=>setAddCourse(school.id)} className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 px-2 py-1 bg-blue-900/30 hover:bg-blue-900/50 rounded-lg border border-blue-800/50 transition-colors"><IcPlus s={11}/>Curso</button>
+              </div>
+              {cursosAnio.length===0&&<p className="text-xs text-gray-700 italic pl-6 py-2">Sin cursos para {anioFilter}. Agregá uno con el botón "Curso".</p>}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 pl-5">
+                {cursosAnio.map(c=>{
+                  const alertas=c.estudiantes.filter(e=>calcAlerta(e,c)==="roja").length;
+                  const lbl=`${c.anio}${c.division?" "+c.division:""}`;
+                  const clasesHoy=c.fechasClase?c.fechasClase.filter(f=>f.active&&isPast(f.date)).length:null;
+                  return (
+                    <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-2xl p-4 hover:border-gray-700 transition-colors group">
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <div className="text-sm font-bold text-gray-100">{c.materia}</div>
+                          <div className="text-xs text-gray-500">{lbl} · {c.estudiantes.length} estudiantes</div>
+                          {clasesHoy!==null&&<div className="text-xs text-gray-600">{clasesHoy} clases dadas</div>}
+                        </div>
+                        {alertas>0&&<span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{alertas}</span>}
+                      </div>
+                      <div className="flex gap-1.5 mt-3 flex-wrap">
+                        <button onClick={()=>onSelectCourse(school.id,c.id)} className="flex-1 px-3 py-1.5 text-xs font-semibold rounded-xl border transition-colors" style={{background:school.color+"22",borderColor:school.color+"44",color:school.color}}>
+                          Abrir
+                        </button>
+                        <button onClick={()=>setEditCourse({sId:school.id,c})} className="p-1.5 text-gray-600 hover:text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg border border-gray-700 transition-colors"><IcGear s={12}/></button>
+                        <button onClick={()=>dupCourse(school.id,c.id)} className="p-1.5 text-gray-600 hover:text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg border border-gray-700 transition-colors" title="Duplicar curso"><IcDup s={12}/></button>
+                        <button onClick={()=>delCourse(school.id,c.id)} className="p-1.5 text-gray-600 hover:text-red-400 bg-gray-800 hover:bg-gray-700 rounded-lg border border-gray-700 transition-colors"><IcTrash s={12}/></button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════ APP ═══════════════
+function App(){
+  const [data,setData]=useState(null);
+  const [view,setView]=useState("home");
+  const [sel,setSel]=useState({schoolId:null,courseId:null});
+
+  useEffect(()=>{
+    const raw=localStorage.getItem(LS_KEY);
+    if(raw){ try{ setData(JSON.parse(raw)); }catch{ setData({version:"1",escuelas:[]}); } }
+    else setData({version:"1",escuelas:[]});
+  },[]);
+
+  const updateData=useCallback(fn=>{
+    setData(prev=>{
+      const next=fn(deep(prev));
+      localStorage.setItem(LS_KEY,JSON.stringify(next));
+      return next;
+    });
+  },[]);
+
+  if(!data) return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="text-gray-600 text-sm">Cargando...</div>
+    </div>
+  );
+
+  if(view==="course"&&sel.schoolId&&sel.courseId){
+    return (
+      <CourseView courseId={sel.courseId} schoolId={sel.schoolId} data={data} updateData={updateData}
+        onBack={()=>setView("home")} setGlobalModal={()=>{}}/>
+    );
+  }
+
+  return (
+    <HomeView data={data} updateData={updateData} onSelectCourse={(sId,cId)=>{ setSel({schoolId:sId,courseId:cId}); setView("course"); }}/>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('./sw.js')
+      .then(()=>console.log('PWA lista para uso offline'))
+      .catch(err=>console.log('SW no disponible (modo local):',err.message));
+  });
+}
+</script>
+</body>
+</html>
